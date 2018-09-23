@@ -1,3 +1,14 @@
+{********************************************************}
+{*                  X3F Delphi Project                  *}
+{*    Sigma RAW files to DNG, TIFF, JPEG conversion     *}
+{*      Based on C sources from project Kalpanika       *}
+{*           (https://github.com/Kalpanika)             *}
+{*      Copyright SANDSoft Virtual Firm (c) 2018        *}
+{*                                                      *}
+{*      Last sources can be found at:                   *}
+{*      https://github.com/sandsoft-ua/x3f_delphi       *}
+{********************************************************}
+
 unit x3f_meta;
 
 interface

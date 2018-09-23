@@ -1,3 +1,14 @@
+{********************************************************}
+{*                  X3F Delphi Project                  *}
+{*    Sigma RAW files to DNG, TIFF, JPEG conversion     *}
+{*      Based on C sources from project Kalpanika       *}
+{*           (https://github.com/Kalpanika)             *}
+{*      Copyright SANDSoft Virtual Firm (c) 2018        *}
+{*                                                      *}
+{*      Last sources can be found at:                   *}
+{*      https://github.com/sandsoft-ua/x3f_delphi       *}
+{********************************************************}
+
 unit x3f_io;
 
 interface
@@ -58,6 +69,9 @@ const
   X3F_CAMERAID_SDQH             = 41;
   UNDEFINED_LEAF                = $ffffffff;
   TRUE_PLANES                   = 3;
+
+  legacy_offset: Integer = 0;
+  auto_legacy_offset: Boolean = True;
 
 type
   x3f_extended_types_t = (
@@ -120,7 +134,7 @@ type
 
   x3f_table16 = record
     size : uint32;
-    element : ^uint16;
+    element : PWord;
   end;
 
   x3f_table32 = record
@@ -154,7 +168,7 @@ type
   Px3f_hufftree = ^x3f_hufftree;
 
   x3f_area16 = record
-    data: ^uint16;		  //* Pointer to actual image data */
+    data: System.PWord;		    //* Pointer to actual image data */
     buf: Pointer;			  //* Pointer to allocated buffer for free() */
     rows: uint32;
     columns: uint32;
@@ -190,7 +204,7 @@ type
   Px3f_quattro = ^x3f_quattro;
 
   x3f_area8 = record
-    data: ^uint8;		    //* Pointer to actual image data */
+    data: PByte;		    //* Pointer to actual image data */
     buf: Pointer;			  //* Pointer to allocated buffer for free() */
     rows: uint32;
     columns: uint32;
@@ -262,18 +276,15 @@ type
   Pcamf_entry = ^camf_entry;
 
   camf_entry_table = record
-  var
     size : uint32;
     element : Pcamf_entry;
   end;
 
   x3f_camf_typeN = record
-  var
     val0, val1, val2, val3 : uint32;
   end;
 
   x3f_camf_type2 = record
-  var
     reserved,
     infotype,
     infotype_version,
@@ -281,7 +292,6 @@ type
   end;
 
   x3f_camf_type4 = record
-  var
     decoded_data_size,
     decode_bias,
     block_size,
@@ -289,7 +299,6 @@ type
   end;
 
   x3f_camf_type5 = record
-  var
     decoded_data_size,
     decode_bias,
     unknown2,
@@ -297,7 +306,6 @@ type
   end;
 
   x3f_camf_t = record
-  var
     &type             : uint32;
     tN                : x3f_camf_typeN;
     t2                : x3f_camf_type2;
@@ -313,6 +321,7 @@ type
     decoded_data_size : uint32;
     entry_table       : camf_entry_table;
   end;
+  Px3f_camf_t = ^x3f_camf_t;
 
   x3f_directory_entry_header = record
     identifier,
@@ -530,6 +539,65 @@ begin
 end;
 
 //* --------------------------------------------------------------------- */
+//* Allocating Huffman tree help data                                   */
+//* --------------------------------------------------------------------- */
+
+procedure cleanup_huffman_tree(HTP: Px3f_hufftree);
+begin
+  FreeMem(HTP.nodes);
+end;
+
+procedure new_huffman_tree(HTP: Px3f_hufftree; bits: Integer);
+var
+  leaves: Integer;
+begin
+  leaves := 1 shl bits;
+
+  HTP.free_node_index := 0;
+  GetMem(HTP.nodes, HUF_TREE_MAX_NODES(leaves) * SizeOf(x3f_huffnode));
+end;
+
+procedure cleanup_huffman(var HUFP: Px3f_huffman);
+begin
+  if Assigned(HUFP) then
+  begin
+  //  x3f_printf(DEBUG, "Cleanup Huffman\n");
+
+    FreeMem(HUFP.mapping.element);
+    FreeMem(HUFP.table.element);
+    cleanup_huffman_tree(@(HUFP.tree));
+    FreeMem(HUFP.row_offsets.element);
+    FreeMem(HUFP.rgb8.buf);
+    FreeMem(HUFP.x3rgb16.buf);
+    FreeMem(HUFP);
+  end;
+
+  HUFP := nil;
+end;
+
+function new_huffman(var HUFP: Px3f_huffman): Px3f_huffman;
+begin
+  GetMem(Result, SizeOf(x3f_huffman));
+
+  cleanup_huffman(HUFP);
+
+  //* Set all not read data block pointers to NULL */
+  Result.mapping.size := 0;
+  Result.mapping.element := nil;
+  Result.table.size := 0;
+  Result.table.element := nil;
+  Result.tree.nodes := nil;
+  Result.row_offsets.size := 0;
+  Result.row_offsets.element := nil;
+  Result.rgb8.data := nil;
+  Result.rgb8.buf := nil;
+  Result.x3rgb16.data := nil;
+  Result.x3rgb16.buf := nil;
+
+  HUFP := Result;
+end;
+
+//* --------------------------------------------------------------------- */
 //* Creating a new x3f structure from file                                */
 //* --------------------------------------------------------------------- */
 function x3f_new_from_file(in_file: Integer): Px3f;
@@ -715,6 +783,24 @@ end;
 //* --------------------------------------------------------------------- */
 //* Loading the data in a directory entry                                 */
 //* --------------------------------------------------------------------- */
+procedure Get_Table2(AFileHandle: THandle; var ATable: x3f_table16; ANumber: Integer);
+var
+  i: Integer;
+  _element: System.PWord;
+begin
+  ATable.size := ANumber;
+  ReallocMemory(ATable.element, ANumber * SizeOf(ATable.element^));
+
+  _element := ATable.element;
+  for i := 0 to ANumber - 1 do
+  begin
+    ATable.element^ := x3f_get2(AFileHandle);
+    Inc(ATable.element);
+  end;
+
+  ATable.element := _element;
+end;
+
 procedure Get_Table4(AFileHandle: THandle; var ATable: x3f_table32; ANumber: Integer);
 var
   i: Integer;
@@ -843,6 +929,64 @@ begin
   end;
 end;
 
+function HUF_TREE_GET_LENGTH(AValue: Cardinal): Cardinal; inline;
+begin
+  Result := (AValue shr 27) and $1F;
+end;
+
+function HUF_TREE_GET_CODE(AValue: Cardinal): Cardinal; inline;
+begin
+  Result := AValue and $07FFFFFF;
+end;
+
+procedure populate_huffman_tree(var tree: x3f_hufftree; var table: x3f_table32;
+  var mapping: x3f_table16);
+var
+  i: Integer;
+  _element: PCardinal;
+  _value, _length, _code: Cardinal;
+  _tmp: System.PWord;
+begin
+  new_node(tree);
+
+  _element := table.element;
+
+  for i := 0 to table.size - 1 do
+  begin
+    if _element <> nil then
+    begin
+      _length := HUF_TREE_GET_LENGTH(_element^);
+      _code := HUF_TREE_GET_CODE(_element^);
+
+      (* If we have a valid mapping table - then the value from the
+         mapping table shall be used. Otherwise we use the current
+         index in the table as value. *)
+      if table.size = mapping.size then
+      begin
+        _tmp := mapping.element;
+        Inc(_tmp, i);
+        _value := _tmp^;
+      end
+      else
+        _value := i;
+
+      add_code_to_tree(tree, _length, _code, _value);
+
+(*#ifdef DBG_PRNT
+      {
+        char buffer[100];
+
+        x3f_printf(DEBUG, "H %5d : %5x : %5d : %02x %08x (%08x) (%s)\n",
+		   i, i, value, length, code, element,
+		   display_code(length, code, buffer));
+      }
+#endif*)
+    end;
+
+    Inc(_element);
+  end;
+end;
+
 //* First you set the offset to where to start reading the data ... */
 
 procedure read_data_set_offset(I: Px3f_info; DE: Px3f_directory_entry;
@@ -868,6 +1012,19 @@ begin
   GetMem(_data, Result);
 
   Result := FileRead(I.in_file, _data, Result);
+end;
+
+procedure x3f_load_image_verbatim(I: Px3f_info; DE: Px3f_directory_entry);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+
+//  x3f_printf(DEBUG, "Load image verbatim\n");
+
+  ID.data_size := read_data_block(ID.data, I, DE, 0);
 end;
 
 procedure x3f_load_property_list(Info: Px3f_info; DE: Px3f_directory_entry);
@@ -897,25 +1054,6 @@ begin
 
     Inc(P);
   end;
-end;
-
-//* --------------------------------------------------------------------- */
-//* Allocating Huffman tree help data                                   */
-//* --------------------------------------------------------------------- */
-
-procedure cleanup_huffman_tree(HTP: Px3f_hufftree);
-begin
-  FreeMem(HTP.nodes);
-end;
-
-procedure new_huffman_tree(HTP: Px3f_hufftree; bits: Integer);
-var
-  leaves: Integer;
-begin
-  leaves := 1 shl bits;
-
-  HTP.free_node_index := 0;
-  GetMem(HTP.nodes, HUF_TREE_MAX_NODES(leaves) * SizeOf(x3f_huffnode));
 end;
 
 //* --------------------------------------------------------------------- */
@@ -1001,6 +1139,88 @@ begin
   Result := Q;
 end;
 
+//* Help machinery for reading bits in a memory */
+
+type
+  bit_state = record
+    next_address: PByte;
+    bit_offset: Byte;
+    bits: array[0..7] of Byte;
+  end;
+  Pbit_state = ^bit_state;
+
+procedure set_bit_state(var BS: bit_state; address: PByte);
+begin
+  BS.next_address := address;
+  BS.bit_offset := 8;
+end;
+
+function get_bit(var BS: bit_state): Byte;
+var
+  _byte: Byte;
+  i: Integer;
+begin
+  if BS.bit_offset = 8 then
+  begin
+    _byte := BS.next_address^;
+
+    for i := 7 downto 0 do
+    begin
+      BS.bits[i] := _byte and 1;
+      _byte := _byte shr 1;
+    end;
+
+    Inc(BS.next_address);
+    BS.bit_offset := 0;
+  end;
+
+  Result := BS.bits[BS.bit_offset + 1];
+end;
+
+//* Decode use the TRUE algorithm */
+
+function get_true_diff(var BS: bit_state; HTP: Px3f_hufftree): Integer;
+var
+  diff, i: Integer;
+  _node, new_node: Px3f_huffnode;
+  bits, bit, first_bit: Byte;
+begin
+   _node := HTP.nodes;
+
+  while (_node.branch[0] <> nil) or (_node.branch[1] <> nil) do
+  begin
+    bit := get_bit(BS);
+    new_node := _node.branch[bit];
+
+    _node := new_node;
+    if _node = nil then
+    begin
+      //* , bitTODO: Shouldn't this be treated as a fatal error? */
+//      x3f_printf(ERR, "Huffman coding got unexpected bit\n");
+      Exit(0);
+    end;
+  end;
+
+  bits := _node.leaf;
+
+  if bits = 0 then
+    diff := 0
+  else
+    begin
+      first_bit := get_bit(BS);
+
+      diff := first_bit;
+
+      for i := 1 to bits - 1 do
+        diff := (diff shl 1) + get_bit(BS);
+
+      if first_bit = 0 then
+        diff := diff - (1 shl bits) - 1;
+    end;
+
+  Result := diff;
+end;
+
 (* This code (that decodes one of the X3F color planes, really is a
    decoding of a compression algorithm suited for Bayer CFA data. In
    Bayer CFA the data is divided into 2x2 squares that represents
@@ -1016,71 +1236,86 @@ procedure true_decode_one_color(ID: Px3f_image_data; color: Integer);
 var
   TRU: Px3f_true_t;
   Q: Px3f_quattro;
+  seed: uint32;
+  _row, _col, diff, prev, _value: Integer;
+  _tree: Px3f_hufftree;
+  BS: bit_state;
+  row_start_acc: array[0..1, 0..1] of Integer;
+  rows, cols: Cardinal;
+  _area: Px3f_area16;
+  _dst: System.PWord;
+  odd_row, odd_col: Boolean;
+  acc: array[0..1] of Integer;
 begin
   TRU := ID.tru;
   Q := ID.quattro;
-  uint32_t seed = TRU->seed[color]; /* TODO : Is this correct ? */
-  int row;
+  seed := TRU.seed[color]; //* TODO : Is this correct ? */
 
-  x3f_hufftree_t *tree = &TRU->tree;
-  bit_state_t BS;
+  _tree := @(TRU.tree);
 
-  int32_t row_start_acc[2][2];
-  uint32_t rows = ID->rows;
-  uint32_t cols = ID->columns;
-  x3f_area16_t *area = &TRU->x3rgb16;
-  uint16_t *dst = area->data + color;
+  rows := ID.rows;
+  cols := ID.columns;
+  _area := @(TRU.x3rgb16);
+  _dst := _area.data;
+  Inc(_dst, color);
 
-  set_bit_state(&BS, TRU->plane_address[color]);
+  set_bit_state(BS, TRU.plane_address[color]);
 
-  row_start_acc[0][0] = seed;
-  row_start_acc[0][1] = seed;
-  row_start_acc[1][0] = seed;
-  row_start_acc[1][1] = seed;
+  row_start_acc[0][0] := seed;
+  row_start_acc[0][1] := seed;
+  row_start_acc[1][0] := seed;
+  row_start_acc[1][1] := seed;
 
-  if (ID->type_format == X3F_IMAGE_RAW_QUATTRO ||
-      ID->type_format == X3F_IMAGE_RAW_SDQ ||
-      ID->type_format == X3F_IMAGE_RAW_SDQH) {
-    rows = Q->plane[color].rows;
-    cols = Q->plane[color].columns;
+  if (ID.type_format = X3F_IMAGE_RAW_QUATTRO) or
+    (ID.type_format = X3F_IMAGE_RAW_SDQ) or
+    (ID.type_format = X3F_IMAGE_RAW_SDQH) then
+  begin
+    rows := Q.plane[color].rows;
+    cols := Q.plane[color].columns;
 
-    if (Q->quattro_layout && color == 2) {
-      area = &Q->top16;
-      dst = area->data;
-    }
+    if Q.quattro_layout and (color = 2) then
+    begin
+      _area := @(Q.top16);
+      _dst := _area.data;
+    end;
+{
     x3f_printf(DEBUG, "Quattro decode one color (%d) rows=%d cols=%d\n",
-	       color, rows, cols);
-  } else {
+	       color, rows, cols);}
+  end
+{  else
     x3f_printf(DEBUG, "TRUE decode one color (%d) rows=%d cols=%d\n",
 	       color, rows, cols);
-  }
+};
 
-  assert(rows == area->rows && cols >= area->columns);
+  Assert((rows = _area.rows) and (cols >= _area.columns));
 
-  for (row = 0; row < rows; row++) {
-    int col;
-    bool_t odd_row = row&1;
-    int32_t acc[2];
+  for _row := 0 to rows - 1 do
+  begin
+    odd_row := Odd(_row);
 
-    for (col = 0; col < cols; col++) {
-      bool_t odd_col = col&1;
-      int32_t diff = get_true_diff(&BS, tree);
-      int32_t prev = col < 2 ?
-	row_start_acc[odd_row][odd_col] :
-	acc[odd_col];
-      int32_t value = prev + diff;
+    for _col := 0 to cols - 1 do
+    begin
+      odd_col := Odd(_col);
+      diff := get_true_diff(BS, _tree);
+      if _col < 2 then
+        prev := row_start_acc[Integer(odd_row)][Integer(odd_col)]
+      else
+        prev := acc[Integer(odd_col)];
 
-      acc[odd_col] = value;
-      if (col < 2)
-	row_start_acc[odd_row][odd_col] = value;
+      _value := prev + diff;
 
-      /* Discard additional data at the right for binned Quattro plane 2 */
-      if (col >= area->columns) continue;
+      acc[Integer(odd_col)] := _value;
+      if _col < 2 then
+	      row_start_acc[Integer(odd_row)][Integer(odd_col)] := _value;
 
-      *dst = value;
-      dst += area->channels;
-    }
-  }
+      //* Discard additional data at the right for binned Quattro plane 2 */
+      if _col >= _area.columns then
+        continue;
+
+      _dst^ := _value;
+      Inc(_dst, _area.channels);
+    end;
+  end;
 end;
 
 procedure true_decode(I: Px3f_info;	DE: Px3f_directory_entry);
@@ -1223,6 +1458,344 @@ begin
   true_decode(Info, DE);
 end;
 
+//* Decode use the huffman tree */
+
+function get_huffman_diff(BS: Pbit_state; HTP: Px3f_hufftree): Integer;
+var
+  _node, new_node: Px3f_huffnode;
+  bit: Byte;
+begin
+  _node := HTP.nodes;
+
+  while Assigned(_node.branch[0]) or Assigned(_node.branch[1]) do
+  begin
+    bit := get_bit(BS^);
+    new_node := _node.branch[bit];
+
+    _node := new_node;
+    if _node = nil then
+    begin
+      //* TODO: Shouldn't this be treated as a fatal error? */
+//      x3f_printf(ERR, "Huffman coding got unexpected bit\n");
+      Exit(0);
+    end;
+  end;
+
+  Result := _node.leaf;
+end;
+
+procedure huffman_decode_row(I: Px3f_info; DE: Px3f_directory_entry;
+  bits, row, offset: Integer; minimum: PInteger);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+  HUF: Px3f_huffman;
+  c: array[0..2] of ShortInt;
+  col, _color: Integer;
+  BS: bit_state;
+  _element: PCardinal;
+  c_fix: Word;
+  _dataW: System.PWord;
+  _dataB: PByte;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+  HUF := ID.huffman;
+
+  for col := 0 to 2 do
+    c[col] := offset;
+
+  _element := HUF.row_offsets.element;
+  Inc(_element, row);
+  set_bit_state(BS, PByte(ID.data) + _element^);
+
+  for col := 0 to ID.columns - 1 do
+  begin
+    for _color := 0 to 2 do
+    begin
+      Inc(c[_color], get_huffman_diff(@BS, @(HUF.tree)));
+      if c[_color] < 0 then
+      begin
+        c_fix := 0;
+        if c[_color] < minimum^ then
+          minimum^ := c[_color];
+      end
+      else
+        c_fix := c[_color];
+
+      case ID.type_format of
+      X3F_IMAGE_RAW_HUFFMAN_X530,
+      X3F_IMAGE_RAW_HUFFMAN_10BIT:
+        begin
+          _dataW := HUF.x3rgb16.data;
+          Inc(_dataW, 3 * (row * ID.columns + col) + _color);
+          _dataW^ := c_fix;
+        end;
+      X3F_IMAGE_THUMB_HUFFMAN:
+        begin
+          _dataB := HUF.rgb8.data;
+          Inc(_dataB, 3 * (row * ID.columns + col) + _color);
+          _dataB^ := Byte(c_fix);
+        end;
+      else
+//* TODO: Shouldn't this be treated as a fatal error? */
+//        x3f_printf(ERR, "Unknown huffman image type\n");
+      end;
+    end;
+  end;
+end;
+
+procedure huffman_decode(I: Px3f_info; DE: Px3f_directory_entry; bits: Integer);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+  row, minimum, offset: Integer;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+
+  minimum := 0;
+  offset := legacy_offset;
+
+//  x3f_printf(DEBUG, "Huffman decode with offset: %d\n", offset);
+  for row := 0 to ID.rows - 1 do
+    huffman_decode_row(I, DE, bits, row, offset, @minimum);
+
+  if auto_legacy_offset and (minimum < 0) then
+  begin
+    offset := -minimum;
+//    x3f_printf(DEBUG, "Redo with offset: %d\n", offset);
+    for row := 0 to ID.rows - 1 do
+      huffman_decode_row(I, DE, bits, row, offset, @minimum);
+  end;
+end;
+
+function get_simple_diff(HUF: Px3f_huffman; index: Word): Word;
+var
+  _element: System.PWord;
+begin
+  if HUF.mapping.size = 0 then
+    Result := index
+  else
+    begin
+      _element := HUF.mapping.element;
+      Inc(_element, index);
+      Result := _element^;
+    end;
+end;
+
+procedure simple_decode_row(I: Px3f_info; DE: Px3f_directory_entry;
+  bits, row, row_stride: Integer);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+  HUF: Px3f_huffman;
+  _data: PCardinal;
+  c: array[0..2] of Word;
+  col, _color: Integer;
+  mask, val: Cardinal;
+  c_fix: Word;
+  _dataW: System.PWord;
+  _dataB: PByte;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+  HUF := ID.huffman;
+
+  _data := ID.data;
+  Inc(_data, row * row_stride);
+
+  for col := 0 to 2 do
+    c[col] := 0;
+
+  mask := 0;
+
+  case bits of
+  8:
+    mask := $0ff;
+  9:
+    mask := $1ff;
+  10:
+    mask := $3ff;
+  11:
+    mask := $7ff;
+  12:
+    mask := $fff;
+  else
+    //* TODO: Shouldn't this be treated as a fatal error? */
+//    x3f_printf(ERR, "Unknown number of bits: %d\n", bits);
+    mask := 0;
+  end;
+
+  for col := 0 to ID.columns do
+  begin
+    val := _data^;
+
+    for _color := 0 to 3 do
+    begin
+      Inc(c[_color], get_simple_diff(HUF, val shr (_color * bits)) and mask);
+
+      case ID.type_format of
+      X3F_IMAGE_RAW_HUFFMAN_X530,
+      X3F_IMAGE_RAW_HUFFMAN_10BIT:
+        begin
+          if c[_color] > 0 then
+            c_fix := c[_color]
+          else
+            c_fix := 0;
+          _dataW := HUF.x3rgb16.data;
+          Inc(_dataW, 3 * (row * ID.columns + col) + _color);
+          _dataW^ := c_fix;
+        end;
+      X3F_IMAGE_THUMB_HUFFMAN:
+        begin
+          if c[_color] > 0 then
+            c_fix := c[_color]
+          else
+            c_fix := 0;
+          _dataB := HUF.rgb8.data;
+          Inc(_dataB, 3 * (row * ID.columns + col) + _color);
+          _dataB^ := Byte(c_fix);
+        end;
+      else
+	//* TODO: Shouldn't this be treated as a fatal error? */
+//        x3f_printf(ERR, "Unknown huffman image type\n");
+      end;
+    end;
+
+    Inc(_data);
+  end;
+end;
+
+procedure simple_decode(I: Px3f_info; DE: Px3f_directory_entry;
+  bits, row_stride: Integer);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+  row: Integer;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+
+  for row := 0 to ID.rows - 1 do
+    simple_decode_row(I, DE, bits, row, row_stride);
+end;
+
+procedure x3f_load_huffman_compressed(I: Px3f_info; DE: Px3f_directory_entry;
+  bits: Integer; use_map_table: Boolean);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+  HUF: Px3f_huffman;
+  table_size, row_offsets_size: Integer;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+  HUF := ID.huffman;
+  table_size := 1 shl bits;
+  row_offsets_size := ID.rows * SizeOf(HUF.row_offsets.element^);
+
+//  x3f_printf(DEBUG, "Load huffman compressed\n");
+
+  Get_Table4(I.in_file, HUF.table, table_size);
+
+  ID.data_size := read_data_block(ID.data, I, DE, row_offsets_size);
+
+  Get_Table4(I.in_file, HUF.row_offsets, ID.rows);
+
+//  x3f_printf(DEBUG, "Make huffman tree ...\n");
+  new_huffman_tree(@(HUF.tree), bits);
+  populate_huffman_tree(HUF.tree, HUF.table, HUF.mapping);
+//  x3f_printf(DEBUG, "... DONE\n");
+
+{#ifdef DBG_PRNT
+  print_huffman_tree(HUF->tree.nodes, 0, 0);
+#endif
+}
+  huffman_decode(I, DE, bits);
+end;
+
+procedure x3f_load_huffman_not_compressed(I: Px3f_info; DE: Px3f_directory_entry;
+  bits: Integer; use_map_table: Boolean; row_stride: Integer);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+
+//  x3f_printf(DEBUG, "Load huffman not compressed\n");
+
+  ID.data_size := read_data_block(ID.data, I, DE, 0);
+
+  simple_decode(I, DE, bits, row_stride);
+end;
+
+procedure x3f_load_huffman(I: Px3f_info; DE: Px3f_directory_entry;
+  bits: Integer; use_map_table: Boolean; row_stride: Integer);
+var
+  DEH: Px3f_directory_entry_header;
+  ID: Px3f_image_data;
+  HUF: Px3f_huffman;
+  _size: Cardinal;
+  table_size: Integer;
+begin
+  DEH := @(DE.header);
+  ID := @(DEH.data_subsection.image_data);
+  HUF := new_huffman(ID.huffman);
+
+  if use_map_table then
+  begin
+    table_size := 1 shl bits;
+
+    Get_Table2(I.in_file, HUF.mapping, table_size);  //???!!!
+  end;
+
+  case ID.type_format of
+  X3F_IMAGE_RAW_HUFFMAN_X530,
+  X3F_IMAGE_RAW_HUFFMAN_10BIT:
+    begin
+      _size := ID.columns * ID.rows * 3;
+      HUF.x3rgb16.columns := ID.columns;
+      HUF.x3rgb16.rows := ID.rows;
+      HUF.x3rgb16.channels := 3;
+      HUF.x3rgb16.row_stride := ID.columns * 3;
+      GetMem(HUF.x3rgb16.buf, SizeOf(uint16) * _size);
+      HUF.x3rgb16.data := HUF.x3rgb16.buf;
+    end;
+  X3F_IMAGE_THUMB_HUFFMAN:
+    begin
+      _size := ID.columns * ID.rows * 3;
+      HUF.rgb8.columns := ID.columns;
+      HUF.rgb8.columns := ID.rows;
+      HUF.rgb8.channels := 3;
+      HUF.rgb8.row_stride := ID.columns * 3;
+      GetMem(HUF.rgb8.buf, SizeOf(uint8) * _size);
+      HUF.rgb8.data := HUF.rgb8.buf;
+    end;
+  else
+    //* TODO: Shouldn't this be treated as a fatal error? */
+//    x3f_printf(ERR, "Unknown huffman image type\n");
+  end;
+
+  if row_stride = 0 then
+    x3f_load_huffman_compressed(I, DE, bits, use_map_table)
+  else
+    x3f_load_huffman_not_compressed(I, DE, bits, use_map_table, row_stride);
+end;
+
+procedure x3f_load_pixmap(I: Px3f_info; DE: Px3f_directory_entry);
+begin
+//  x3f_printf(DEBUG, "Load pixmap\n");
+  x3f_load_image_verbatim(I, DE);
+end;
+
+procedure x3f_load_jpeg(I: Px3f_info; DE: Px3f_directory_entry);
+begin
+//  x3f_printf(DEBUG, "Load JPEG\n");
+  x3f_load_image_verbatim(I, DE);
+end;
+
 procedure x3f_load_image(I: Px3f_info; DE: Px3f_directory_entry);
 var
   DEH: Px3f_directory_entry_header;
@@ -1242,17 +1815,50 @@ begin
     x3f_load_true(I, DE);
   X3F_IMAGE_RAW_HUFFMAN_X530,
   X3F_IMAGE_RAW_HUFFMAN_10BIT:
-    x3f_load_huffman(I, DE, 10, 1, ID.row_stride);
+    x3f_load_huffman(I, DE, 10, True, ID.row_stride);
   X3F_IMAGE_THUMB_PLAIN:
     x3f_load_pixmap(I, DE);
   X3F_IMAGE_THUMB_HUFFMAN:
-    x3f_load_huffman(I, DE, 8, 0, ID.row_stride);
+    x3f_load_huffman(I, DE, 8, False, ID.row_stride);
   X3F_IMAGE_THUMB_JPEG:
     x3f_load_jpeg(I, DE);
   else
     //* TODO: Shouldn't this be treated as a fatal error? */
 //    x3f_printf(ERR, "Unknown image type\n");
   end;
+end;
+
+procedure x3f_load_camf(I: Px3f_info; DE: Px3f_directory_entry);
+var
+  DEH: Px3f_directory_entry_header;
+  CAMF: Px3f_camf_t;
+begin
+  DEH := @(DE.header);
+  CAMF := @(DEH.data_subsection.camf);
+
+//  x3f_printf(DEBUG, "Loading CAMF of type %d\n", CAMF->type);
+
+  read_data_set_offset(I, DE, X3F_CAMF_HEADER_SIZE);
+
+  CAMF.data_size := read_data_block(CAMF.data, I, DE, 0);
+
+  case CAMF.&type of
+  2:			//* Older SD9-SD14 */
+    x3f_load_camf_decode_type2(CAMF);
+  4:			//* TRUE ... Merrill */
+    x3f_load_camf_decode_type4(CAMF);
+  5:			//* Quattro ... */
+    x3f_load_camf_decode_type5(CAMF);
+  else
+    //* TODO: Shouldn't this be treated as a fatal error? */
+//    x3f_printf(ERR, "Unknown CAMF type\n");
+  end;
+
+  if CAMF.decoded_data <> nil then
+    x3f_setup_camf_entries(CAMF);
+{  else
+    //* TODO: Shouldn't this be treated as a fatal error? */
+    x3f_printf(ERR, "No decoded CAMF data\n");}
 end;
 
 function x3f_load_data(_x3f: Px3f; DE: Px3f_directory_entry): x3f_return;
