@@ -257,7 +257,7 @@ type
     name_size,
     value_size,
     text_size                     : uint32;
-    text                          : ^byte;
+    text                          : PAnsiChar;
     property_num                  : uint32;
     property_name,
     property_value                : ^PByte;
@@ -315,7 +315,7 @@ type
     data_size         : uint32;
     table             : x3f_true_huffman_table;
     tree              : x3f_hufftree;
-    decoding_start    : ^byte;
+    decoding_start    : PByte;
     decoding_size     : uint32;
     decoded_data      : pointer;
     decoded_data_size : uint32;
@@ -789,16 +789,14 @@ var
   _element: System.PWord;
 begin
   ATable.size := ANumber;
-  ReallocMemory(ATable.element, ANumber * SizeOf(ATable.element^));
+  ReallocMem(ATable.element, ANumber * SizeOf(ATable.element^));
 
   _element := ATable.element;
   for i := 0 to ANumber - 1 do
   begin
-    ATable.element^ := x3f_get2(AFileHandle);
-    Inc(ATable.element);
+    _element^ := x3f_get2(AFileHandle);
+    Inc(_element);
   end;
-
-  ATable.element := _element;
 end;
 
 procedure Get_Table4(AFileHandle: THandle; var ATable: x3f_table32; ANumber: Integer);
@@ -807,16 +805,14 @@ var
   _element: PCardinal;
 begin
   ATable.size := ANumber;
-  ReallocMemory(ATable.element, ANumber * SizeOf(ATable.element^));
+  ReallocMem(ATable.element, ANumber * SizeOf(ATable.element^));
 
   _element := ATable.element;
   for i := 0 to ANumber - 1 do
   begin
-    ATable.element^ := x3f_get4(AFileHandle);
-    Inc(ATable.element);
+    _element^ := x3f_get4(AFileHandle);
+    Inc(_element);
   end;
-
-  ATable.element := _element;
 end;
 
 procedure Get_Property_Table(AFileHandle: THandle; APropTable: Px3f_property_table; ANumber: Integer);
@@ -890,7 +886,7 @@ begin
     _bit := (_code shr _pos) and 1;
     _t_next := _t.branch[_bit];
 
-    if Assigned(_t_next) then
+    if _t_next = nil then
     begin
       _t.branch[_bit] := new_node(tree);
       _t_next := _t.branch[_bit];
@@ -1826,6 +1822,538 @@ begin
     //* TODO: Shouldn't this be treated as a fatal error? */
 //    x3f_printf(ERR, "Unknown image type\n");
   end;
+end;
+
+procedure x3f_setup_camf_text_entry(entry: Pcamf_entry);
+begin
+  entry.text_size := PCardinal(entry.value_address)^;
+  entry.text := PAnsiChar(entry.value_address) + 4;
+end;
+
+procedure x3f_setup_camf_property_entry(entry: Pcamf_entry);
+var
+  i: Integer;
+  _e, _v: PByte;
+  num, off, name_off, value_off: Cardinal;
+begin
+  _e := entry.entry;
+  _v := entry.value_address;
+  entry.property_num := _v^;
+  num := entry.property_num;
+  off := (_v + 4)^;
+
+  GetMem(entry.property_name^, num * SizeOf(PByte));
+  GetMem(entry.property_value^, num * SizeOf(PByte));
+
+  for i := 0 to num - 1 do
+  begin
+    name_off := off + (_v + 8 + 8 * i)^;
+    value_off := off + (_v + 8 + 8 * i + 4)^;
+
+    entry.property_name := Pointer(_e + name_off);
+    entry.property_value := Pointer(_e + value_off);
+    Inc(entry.property_name);
+    Inc(entry.property_value);
+  end;
+end;
+
+procedure set_matrix_element_info(AType: Cardinal; var ASize: Cardinal;
+  var decoded_type: matrix_type);
+begin
+  case AType of
+  0:
+    begin
+      ASize := 2;
+      decoded_type := M_INT; //* known to be true */
+    end;
+  1:
+    begin
+      ASize := 4;
+      decoded_type := M_UINT; //* TODO: unknown ???? */
+    end;
+  2:
+    begin
+      ASize := 4;
+      decoded_type := M_UINT; //* TODO: unknown ???? */
+    end;
+  3:
+    begin
+      ASize := 4;
+      decoded_type := M_FLOAT; //* known to be true */
+    end;
+  5:
+    begin
+      ASize := 1;
+      decoded_type := M_UINT; //* TODO: unknown ???? */
+    end;
+  6:
+    begin
+      ASize := 2;
+      decoded_type := M_UINT; //* TODO: unknown ???? */
+    end;
+  else
+//    x3f_printf(ERR, "Unknown matrix type (%ud)\n", type);
+    Assert(False, Format('Unknown matrix type (%d)', [AType]));
+  end;
+end;
+
+procedure get_matrix_copy(var entry: camf_entry);
+var
+  element_size, elements: Cardinal;
+  i, _size: Integer;
+begin
+  element_size := entry.matrix_element_size;
+  elements := entry.matrix_elements;
+
+  if entry.matrix_decoded_type = M_FLOAT then
+    _size := SizeOf(Double)
+  else
+    _size := SizeOf(Cardinal) * elements;
+
+  GetMem(entry.matrix_decoded, _size);
+
+  case element_size of
+  4:
+    case entry.matrix_decoded_type of
+    M_INT, M_UINT:
+      CopyMemory(entry.matrix_decoded, entry.matrix_data, _size);
+    M_FLOAT:
+      for i := 0 to elements - 1 do
+      begin
+	      PDouble(entry.matrix_decoded)^ := PSingle(entry.matrix_data)^;
+        Inc(PDouble(entry.matrix_decoded));
+        Inc(PSingle(entry.matrix_data));
+      end
+    else
+//      x3f_printf(ERR, "Invalid matrix element type of size 4\n");
+      Assert(False, 'Invalid matrix element type of size 4');
+    end;
+  2:
+    case entry.matrix_decoded_type of
+    M_INT:
+      for i := 0 to elements - 1 do
+      begin
+	      PInteger(entry.matrix_decoded)^ := PSmallInt(entry.matrix_data)^;
+        Inc(PInteger(entry.matrix_decoded));
+        Inc(PSmallInt(entry.matrix_data));
+      end;
+    M_UINT:
+      for i := 0 to elements - 1 do
+      begin
+	      PCardinal(entry.matrix_decoded)^ := PSmallInt(entry.matrix_data)^;
+        Inc(PCardinal(entry.matrix_decoded));
+        Inc(PSmallInt(entry.matrix_data));
+      end
+    else
+//      x3f_printf(ERR, "Invalid matrix element type of size 2\n");
+      Assert(False, 'Invalid matrix element type of size 2');
+    end;
+  1:
+    case entry.matrix_decoded_type of
+    M_INT:
+      for i := 0 to elements - 1 do
+      begin
+	      PInteger(entry.matrix_decoded)^ := PShortInt(entry.matrix_data)^;
+        Inc(PInteger(entry.matrix_decoded));
+        Inc(PShortInt(entry.matrix_data));
+      end;
+    M_UINT:
+      for i := 0 to elements - 1 do
+      begin
+	      PCardinal(entry.matrix_decoded)^ := PByte(entry.matrix_data)^;
+        Inc(PCardinal(entry.matrix_decoded));
+        Inc(PByte(entry.matrix_data));
+      end
+    else
+//      x3f_printf(ERR, "Invalid matrix element type of size 1\n");
+      Assert(False, 'Invalid matrix element type of size 1');
+    end;
+  else
+//    x3f_printf(ERR, "Unknown size %d\n", element_size);
+    Assert(False, Format('Unknown size %d', [element_size]));
+  end;
+end;
+
+procedure x3f_setup_camf_matrix_entry(entry: Pcamf_entry);
+var
+  i, totalsize: Integer;
+  e, v: PByte;
+  _type, dim, off, _size: Cardinal;
+  dentry: Pcamf_dim_entry;
+begin
+  totalsize := 1;
+
+  e := entry.entry;
+  v := entry.value_address;
+  entry.matrix_type := (v + 0)^;
+  _type := entry.matrix_type;
+  entry.matrix_dim := (v + 4)^;
+  dim := entry.matrix_dim;
+  entry.matrix_data_off := (v + 8)^;
+  off := entry.matrix_data_off;
+  GetMem(entry.matrix_dim_entry, dim * SizeOf(camf_dim_entry));
+  dentry := entry.matrix_dim_entry;
+
+  for i := 0 to dim - 1 do
+  begin
+    dentry.size := (v + 12 + 12*i + 0)^;
+    _size := dentry.size;
+    dentry.name_offset := (v + 12 + 12*i + 4)^;
+    dentry.n := (v + 12 + 12*i + 8)^;
+    dentry.name := PAnsiChar(e + dentry.name_offset);
+(*
+    if (dentry[i].n != i) {
+      /* TODO: is something needed to be made in this case */
+      x3f_printf(DEBUG,
+		 "Matrix entry for %s/%s is out of order "
+		 "(index/%d != order/%d)\n",
+		 entry->name_address, dentry[i].name, dentry[i].n, i);
+    }
+*)
+    Inc(dentry);
+
+    totalsize := totalsize * _size;
+  end;
+
+  set_matrix_element_info(_type, entry.matrix_element_size, entry.matrix_decoded_type);
+  entry.matrix_data := (e + off);
+
+  entry.matrix_elements := totalsize;
+  entry.matrix_used_space := entry.entry_size - off;
+
+  //* This estimate only works for matrices above a certain size */
+  entry.matrix_estimated_element_size := entry.matrix_used_space / totalsize;
+
+  get_matrix_copy(entry^);
+end;
+
+procedure x3f_setup_camf_entries(CAMF: Px3f_camf_t);
+var
+  p, _end: PByte;
+  _entry: Pcamf_entry;
+  i: Integer;
+  p4: PCardinal;
+begin
+  p := CAMF.decoded_data;
+  _end := p + CAMF.decoded_data_size;
+  _entry := nil;
+
+//  x3f_printf(DEBUG, "SETUP CAMF ENTRIES\n");
+
+  i := 0;
+  while p < _end do
+  begin
+    p4 := PCardinal(p);
+
+    case p4^ of
+    X3F_CMbP,
+    X3F_CMbT,
+    X3F_CMbM:
+      ;
+    else
+//      x3f_printf(ERR, "Unknown CAMF entry %x @ %p\n", *p4, p4);
+//      x3f_printf(ERR, "  start = %p end = %p\n", CAMF->decoded_data, end);
+//      x3f_printf(ERR, "  left = %ld\n", (long)(end - p));
+//      x3f_printf(ERR, "Stop parsing CAMF\n");
+      //* TODO: Shouldn't this be treated as a fatal error? */
+      break;
+    end;
+
+    //* TODO: lots of realloc - may be inefficient */
+    _entry := ReallocMemory(_entry, (i + 1) * SizeOf(camf_entry));
+
+    //* Pointer */
+    Inc(_entry, i);
+    _entry.entry := p;
+
+    //* Header */
+    _entry.id := p4^;
+    Inc(p4);
+    _entry.version := p4^;
+    Inc(p4);
+    _entry.entry_size := p4^;
+    Inc(p4);
+    _entry.name_offset := p4^;
+    Inc(p4);
+    _entry.value_offset := p4^;
+    Inc(p4);
+
+    //* Compute adresses and sizes */
+    _entry.name_address := PAnsiChar(p + _entry.name_offset);
+    _entry.value_address := p + _entry.value_offset;
+    _entry.name_size := _entry.value_offset - _entry.name_offset;
+    _entry.value_size := _entry.entry_size - _entry.value_offset;
+
+    _entry.text_size := 0;
+    _entry.text := nil;
+    _entry.property_num := 0;
+    _entry.property_name := nil;
+    _entry.property_value := nil;
+    _entry.matrix_type := 0;
+    _entry.matrix_dim := 0;
+    _entry.matrix_data_off := 0;
+    _entry.matrix_data := nil;
+    _entry.matrix_dim_entry := nil;
+
+    _entry.matrix_decoded := nil;
+
+    case _entry.id of
+    X3F_CMbP:
+      x3f_setup_camf_property_entry(_entry);
+    X3F_CMbT:
+      x3f_setup_camf_text_entry(_entry);
+    X3F_CMbM:
+      x3f_setup_camf_matrix_entry(_entry);
+    end;
+
+    Inc(p, _entry.entry_size);
+    Inc(i);
+  end;
+
+  CAMF.entry_table.size := i;
+  CAMF.entry_table.element := _entry;
+
+//  x3f_printf(DEBUG, "SETUP CAMF ENTRIES (READY) Found %d entries\n", i);
+end;
+
+procedure x3f_load_camf_decode_type2(CAMF: Px3f_camf_t);
+var
+  i: Integer;
+  key, tmp: Cardinal;
+  old, new: Byte;
+begin
+  key := CAMF.t2.crypt_key;
+
+  CAMF.decoded_data_size := CAMF.data_size;
+  GetMem(CAMF.decoded_data, CAMF.decoded_data_size);
+
+  for i := 0 to CAMF.data_size - 1 do
+  begin
+    old := PByte(CAMF.data)[i];
+    key := (key * 1597 + 51749) mod 244944;
+    tmp := key * (Int64(301593171) shr 24);
+    new := old xor (((((key shl 8) - tmp) shr 1) + tmp) shr 17);
+    PByte(CAMF.decoded_data)[i] := new;
+  end;
+end;
+
+{ NOTE: the unpacking in this code is in big respects identical to
+   true_decode_one_color(). The difference is in the output you
+   build. It might be possible to make some parts shared. NOTE ALSO:
+   This means that the meta data is obfuscated using an image
+   compression algorithm. }
+
+procedure camf_decode_type4(CAMF: Px3f_camf_t);
+var
+  seed, dst_size, rows, cols: Cardinal;
+  row, col, diff, prev, _value: Integer;
+  dst, dst_end: PByte;
+  odd_dst, odd_row, odd_col: Boolean;
+  _tree: Px3f_hufftree;
+  BS: bit_state;
+  row_start_acc: array [Boolean, Boolean] of Integer;
+  acc: array[Boolean] of Integer;
+begin
+  seed := CAMF.t4.decode_bias;
+
+  dst_size := CAMF.t4.decoded_data_size;
+
+  odd_dst := False;
+
+  _tree := @(CAMF.tree);
+
+  rows := CAMF.t4.block_count;
+  cols := CAMF.t4.block_size;
+
+  CAMF.decoded_data_size := dst_size;
+
+  GetMem(CAMF.decoded_data, CAMF.decoded_data_size);
+  ZeroMemory(CAMF.decoded_data, CAMF.decoded_data_size);
+
+  dst := CAMF.decoded_data;
+  dst_end := dst + dst_size;
+
+  set_bit_state(BS, CAMF.decoding_start);
+
+  row_start_acc[False, False] := seed;
+  row_start_acc[False, True] := seed;
+  row_start_acc[True, False] := seed;
+  row_start_acc[True, True] := seed;
+
+  for row := 0 to rows - 1 do
+  begin
+    odd_row := Odd(row);
+
+    { We loop through all the columns and the rows. But the actual
+       data is smaller than that, so we break the loop when reaching
+       the end. }
+    for col := 0 to cols - 1 do
+    begin
+      odd_col := Odd(col);
+      diff := get_true_diff(BS, _tree);
+
+      if col < 2 then
+        prev := row_start_acc[odd_row, odd_col]
+      else
+        prev := acc[odd_col];
+
+      _value := prev + diff;
+
+      acc[odd_col] := _value;
+      if col < 2 then
+	      row_start_acc[odd_row, odd_col] := _value;
+
+      if odd_dst then
+      begin
+        dst^ := dst^ or (_value shr 8) and $0F;
+        Inc(dst);
+
+        if dst >= dst_end then
+          Exit;
+
+        dst^ := _value and $FF;
+        Inc(dst);
+
+        if dst >= dst_end then
+          Exit;
+      end
+      else
+        begin
+	        dst^ := (_value shr 4) and $FF;
+          Inc(dst);
+
+	        if dst >= dst_end then
+	          Exit;
+
+	        dst^ := (_value shl 4) and $F0;
+        end;
+
+      odd_dst := not odd_dst;
+    end; //* end col */
+  end;   //* end row */
+end;
+
+procedure x3f_load_camf_decode_type4(CAMF: Px3f_camf_t);
+var
+  i: Integer;
+  p: PByte;
+  _element, _tmp: Px3f_true_huffman_element;
+const
+  //* TODO: where does the values 28 and 32 come from? */
+  CAMF_T4_DATA_SIZE_OFFSET = 28;
+  CAMF_T4_DATA_OFFSET = 32;
+begin
+  _element := nil;
+
+  p := CAMF.data;
+  i := 0;
+  while p^ <> 0 do
+  begin
+    //* TODO: Is this too expensive ??*/
+    _element := ReallocMemory(_element, (i + 1) * SizeOf(_element^));
+    _tmp := _element;
+    Inc(_tmp, i);
+
+    _tmp.code_size := p^;
+    Inc(p);
+    _tmp.code := p^;
+    Inc(p);
+
+    Inc(i);
+  end;
+
+  CAMF.table.size := i;
+  CAMF.table.element := _element;
+
+  CAMF.decoding_size := PByte(PByte(CAMF.data) + CAMF_T4_DATA_SIZE_OFFSET)^;
+  CAMF.decoding_start := PByte(CAMF.data) + CAMF_T4_DATA_OFFSET;
+
+  //* TODO: can it be fewer than 8 bits? Maybe taken from TRU->table? */
+  new_huffman_tree(@(CAMF.tree), 8);
+
+  populate_true_huffman_tree(CAMF.tree, CAMF.table);
+(*
+#ifdef DBG_PRNT
+  print_huffman_tree(CAMF->tree.nodes, 0, 0);
+#endif
+*)
+  camf_decode_type4(CAMF);
+end;
+
+procedure camf_decode_type5(CAMF: Px3f_camf_t);
+var
+  acc, i, diff: Integer;
+  dst: PByte;
+  tree: Px3f_hufftree;
+  BS: bit_state;
+begin
+  acc := CAMF.t5.decode_bias;
+
+  tree := @(CAMF.tree);
+
+  CAMF.decoded_data_size := CAMF.t5.decoded_data_size;
+  GetMem(CAMF.decoded_data, CAMF.decoded_data_size);
+
+  dst := CAMF.decoded_data;
+
+  set_bit_state(BS, CAMF.decoding_start);
+
+  for i := 0 to CAMF.decoded_data_size - 1 do
+  begin
+    diff := get_true_diff(BS, tree);
+
+    acc := acc + diff;
+    dst^ := acc and $FF;
+    Inc(dst);
+  end;
+end;
+
+procedure x3f_load_camf_decode_type5(CAMF: Px3f_camf_t);
+var
+  i: Integer;
+  p: PByte;
+  _element, _tmp: Px3f_true_huffman_element;
+const
+  //* TODO: where does the values 28 and 32 come from? */
+  CAMF_T5_DATA_SIZE_OFFSET = 28;
+  CAMF_T5_DATA_OFFSET = 32;
+begin
+  _element := nil;
+
+  p := CAMF.data;
+  i := 0;
+  while p^ <> 0 do
+  begin
+    //* TODO: Is this too expensive ??*/
+    _element := ReallocMemory(_element, (i + 1) * SizeOf(_element^));
+    _tmp := _element;
+    Inc(_tmp, i);
+
+    _tmp.code_size := p^;
+    Inc(p);
+    _tmp.code := p^;
+    Inc(p);
+
+    Inc(i);
+  end;
+
+  CAMF.table.size := i;
+  CAMF.table.element := _element;
+
+  CAMF.decoding_size := PByte(PByte(CAMF.data) + CAMF_T5_DATA_SIZE_OFFSET)^;
+  CAMF.decoding_start := PByte(CAMF.data) + CAMF_T5_DATA_OFFSET;
+
+  //* TODO: can it be fewer than 8 bits? Maybe taken from TRU->table? */
+  new_huffman_tree(@(CAMF.tree), 8);
+
+  populate_true_huffman_tree(CAMF.tree, CAMF.table);
+
+(*
+#ifdef DBG_PRNT
+  print_huffman_tree(CAMF->tree.nodes, 0, 0);
+#endif
+*)
+  camf_decode_type5(CAMF);
 end;
 
 procedure x3f_load_camf(I: Px3f_info; DE: Px3f_directory_entry);

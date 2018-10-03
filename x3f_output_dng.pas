@@ -28,7 +28,7 @@ function x3f_dump_raw_data_as_dng(_x3f: Px3f; outfilename: String;
   fix_bad: Boolean; denoise: Boolean; apply_sgain: Integer; wb: String;
   compress: Integer): x3f_return;
 begin
-
+  Result := X3F_OK; //Test
 end;
 
 end.

@@ -40,6 +40,8 @@ var
   f_out: TTIFFGraphic;
   _image: x3f_area16;
 begin
+  Result := X3F_INTERNAL_ERROR;
+
   if x3f_get_image(_x3f, _image, nil, encoding, crop, fix_bad, denoise,
     apply_sgain, wb) then
   begin
@@ -47,6 +49,7 @@ begin
 //    f_out.Width :=
 
     f_out.SaveToFile(outfilename);
+    Result := X3F_OK;
   end;
 end;
 
