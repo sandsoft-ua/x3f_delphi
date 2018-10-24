@@ -22,11 +22,11 @@ function x3f_dump_raw_data_as_tiff(_x3f: Px3f; outfilename: String;
 					     denoise: Boolean;
 					     apply_sgain: Integer;
 					     wb: String;
-					     compress: Integer): x3f_return;
+					     compress: Boolean): x3f_return;
 
 implementation
 
-uses GraphicEx;
+uses hyieutils, SysUtils, Windows;
 
 function x3f_dump_raw_data_as_tiff(_x3f: Px3f; outfilename: String;
 				       encoding: x3f_color_encoding_t;
@@ -35,20 +35,43 @@ function x3f_dump_raw_data_as_tiff(_x3f: Px3f; outfilename: String;
 					     denoise: Boolean;
 					     apply_sgain: Integer;
 					     wb: String;
-					     compress: Integer): x3f_return;
+					     compress: Boolean): x3f_return;
 var
-  f_out: TTIFFGraphic;
+  f_out: TIEBitmap;
+//  f_out: Integer;
   _image: x3f_area16;
+  row: Integer;
+  _data: System.PWord;
 begin
   Result := X3F_INTERNAL_ERROR;
 
   if x3f_get_image(_x3f, _image, nil, encoding, crop, fix_bad, denoise,
     apply_sgain, wb) then
   begin
-    f_out := TTIFFGraphic.Create;
-//    f_out.Width :=
+    f_out := TIEBitmap.Create(_image.columns, _image.rows, ie48RGB);
 
-    f_out.SaveToFile(outfilename);
+    _data := _image.data;
+    for row := 0 to _image.rows - 1 do
+    begin
+      Move(_data^, f_out.ScanLine[row]^, _image.row_stride * 2);
+      Inc(_data, _image.row_stride);
+    end;
+
+//    f_out.Write(outfilename);
+    f_out.Write('c:\temp\raw_test_01.jpg');
+
+{
+    f_out := FileOpen(outfilename, GENERIC_WRITE);
+    if f_out <= 0 then
+      f_out := FileCreate(outfilename, GENERIC_WRITE);
+
+    try
+      //There was a bug in Kalpanika source! It wroten not used 28 bytes (header size) to output file.
+      SysUtils.FileWrite(f_out, _image.data^, _image.rows * _image.row_stride * 2);
+    finally
+      FileClose(f_out);
+    end;
+}
     Result := X3F_OK;
   end;
 end;

@@ -35,7 +35,7 @@ var
   white: array[0..2] of Cardinal;
 
 function x3f_get_image(_x3f: Px3f;
-			       image: x3f_area16;
+			       var image: x3f_area16;
 			       ilevels: Px3f_image_levels;
 			       encoding: x3f_color_encoding_t;
 			       crop,
@@ -48,7 +48,7 @@ implementation
 
 uses x3f_meta, x3f_image;
 
-function x3f_get_image(_x3f: Px3f; image: x3f_area16; ilevels: Px3f_image_levels;
+function x3f_get_image(_x3f: Px3f; var image: x3f_area16; ilevels: Px3f_image_levels;
   encoding: x3f_color_encoding_t; crop, fix_bad, denoise: Boolean;
   apply_sgain: Integer; wb: String): Boolean;
 var
@@ -71,6 +71,8 @@ begin
 
   if not x3f_image_area(_x3f, original_image) then
     Exit(False);
+
+  image := original_image;  //Test!!!
 {
   if not crop or not
     x3f_crop_area_camf(_x3f, 'ActiveImageArea', original_image, 1, image) then
@@ -78,10 +80,10 @@ begin
 
   if encoding = UNPROCESSED then
     Exit(ilevels = nil);
-
+}
   if not preprocess_data(_x3f, fix_bad, wb, &il) then
     Exit(False);
-
+{
   if (expand_quattro(_x3f, denoise, expanded)) then
   begin
     //* NOTE: expand_quattro destroys the data of original_image */
@@ -103,8 +105,8 @@ begin
 
   if Assigned(ilevels) then
     ilevels := il;
-
-  Result := True;} Result := False;
+}
+  Result := True;
 end;
 
 end.

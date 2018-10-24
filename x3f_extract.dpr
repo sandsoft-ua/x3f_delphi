@@ -24,7 +24,8 @@ uses
   x3f_output_dng in 'x3f_output_dng.pas',
   x3f_output_tiff in 'x3f_output_tiff.pas',
   x3f_meta in 'x3f_meta.pas',
-  x3f_image in 'x3f_image.pas';
+  x3f_image in 'x3f_image.pas',
+  x3f_dump in 'x3f_dump.pas';
 
 type
   output_file_type_t = (
@@ -36,11 +37,6 @@ type
     PPMP3     = 5,
     PPMP6     = 6,
     HISTOGRAM = 7);
-
-const
-  extract_jpg = 0;
-  extract_raw = 0;
-  extract_unconverted_raw = 0;
 
 const // 1d arrays
   extension : array[output_file_type_t] of String = (
@@ -194,7 +190,7 @@ var
   log_hist,
   legacy_offset: Integer;
   wb: String;
-  compress,
+
   use_opencl: Integer;
   outdir, tmpfile, outfile: String;
 
@@ -203,7 +199,7 @@ var
   i, j: Integer;
   encoding,
   infile: String;
-  auto_legacy_offset: Boolean;
+  compress, auto_legacy_offset: Boolean;
 begin
   extract_jpg := False;
   extract_raw := True;
@@ -223,7 +219,7 @@ begin
   errors := 0;
   log_hist := 0;
   wb := EmptyStr;
-  compress := 0;
+  compress := False;
   use_opencl := 0;
   outdir := EmptyStr;
 
@@ -372,7 +368,7 @@ begin
     end
     else
     if SameText(ParamStr(i), '-compress') then
-      compress := 1
+      compress := True
     else
     if SameText(ParamStr(i), '-ocl') then
       use_opencl := 1
@@ -432,12 +428,12 @@ begin
 
     if extract_jpg then
     begin
-{      ret := x3f_load_data(x3f, x3f_get_thumb_jpeg(x3f));
+      ret := x3f_load_data(_x3f, x3f_get_thumb_jpeg(_x3f));
       if ret <> X3F_OK then
       begin
         Writeln(Format('Could not load JPEG thumbnail from %s (%s)',  [infile, x3f_err(ret)]));
         goto found_error;
-      end;} //!!!
+      end;
     end;
 
     if extract_meta then
@@ -484,19 +480,19 @@ begin
 
     if extract_unconverted_raw then
     begin
-{      DE := x3f_get_raw(x3f);
+      DE := x3f_get_raw(_x3f);
       if not Assigned(DE) then
       begin
         Writeln('Could not find any matching RAW format');
         goto found_error;
       end;
 
-      ret := x3f_load_image_block(x3f, DE);
+      ret := x3f_load_image_block(_x3f, DE);
       if ret <> X3F_OK then
       begin
         Writeln(Format('Could not load unconverted RAW from %s (%s)', [infile, x3f_err(ret)]));
         goto found_error;
-      end;} //!!!
+      end;
     end;
 
     if make_paths(infile, outdir, extension[file_type], tmpfile, outfile) <> 0 then
@@ -524,17 +520,17 @@ begin
     JPEG:
       begin
         Writeln(Format('Dump JPEG to %s', [outfile]));
-//        ret_dump := x3f_dump_jpeg(x3f, tmpfile);  //!!!
+        ret_dump := x3f_dump_jpeg(_x3f, outfile);
       end;
     RAW:
       begin
         Writeln(Format('Dump RAW block to %s', [outfile]));
-//        ret_dump := x3f_dump_raw_data(x3f, tmpfile);  //!!!
+        ret_dump := x3f_dump_raw_data(_x3f, outfile);
       end;
     TIFF:
       begin
         Writeln(Format('Dump RAW as TIFF to %s', [outfile]));
-        ret_dump := x3f_dump_raw_data_as_tiff(_x3f, tmpfile, color_encoding,
+        ret_dump := x3f_dump_raw_data_as_tiff(_x3f, {tmpfile}outfile, color_encoding,
           crop, fix_bad, denoise, sgain, wb, compress);
       end;
     DNG:
@@ -568,7 +564,7 @@ begin
     end
     else
       begin
-        if rename(tmpfile, outfile) <> 0 then
+        if not RenameFile(tmpfile, outfile) then
         begin
           Writeln(Format('Could not rename %s to %s', [tmpfile, outfile]));
           Inc(errors);

@@ -386,8 +386,11 @@ type
 
 function x3f_new_from_file(in_file: Integer): Px3f;
 function x3f_load_data(_x3f: Px3f; DE: Px3f_directory_entry): x3f_return;
+function x3f_get_thumb_jpeg(_x3f: Px3f): Px3f_directory_entry;
 function x3f_get_camf(_x3f: Px3f): Px3f_directory_entry;
 function x3f_get_raw(_x3f: Px3f): Px3f_directory_entry;
+function x3f_load_image_block(_x3f: Px3f; DE: Px3f_directory_entry): x3f_return;
+function x3f_err(err: x3f_return): String;
 
 implementation
 
@@ -489,14 +492,14 @@ end;
 //* Reading and writing - assuming little endian in the file              */
 //* --------------------------------------------------------------------- */
 
-function x3f_get1(f: THandle): Integer; inline;
+function x3f_get1(f: THandle): Integer; //inline;
 begin
   //* Little endian file */
   Result := 0;
   FileRead(f, Result, 1);
 end;
 
-function x3f_get2(f: THandle): Integer; inline;
+function x3f_get2(f: THandle): Integer; //inline;
 var
   _tmp: Integer;
 begin
@@ -531,6 +534,11 @@ var
 begin
   _tmp.i := x3f_get4(f);
   Result := _tmp.f;
+end;
+
+function x3f_get_thumb_jpeg(_x3f: Px3f): Px3f_directory_entry;
+begin
+  Result := x3f_get(_x3f, X3F_SECi, X3F_IMAGE_THUMB_JPEG);
 end;
 
 function x3f_get_camf(_x3f: Px3f): Px3f_directory_entry;
@@ -997,17 +1005,14 @@ end;
 
 //* ... then you read the data, block for block */
 
-function read_data_block(var data; I: Px3f_info; DE: Px3f_directory_entry;
+function read_data_block(var data: Pointer; I: Px3f_info; DE: Px3f_directory_entry;
   footer: uint32): uint32;
-var
-  _data: PByte;
 begin
   Result := DE.input.size + DE.input.offset - FileSeek(I.in_file, 0, 1) - footer;
 
-  _data := PByte(@data);
-  GetMem(_data, Result);
+  GetMem(data, Result);
 
-  Result := FileRead(I.in_file, _data, Result);
+  Result := FileRead(I.in_file, data^, Result);
 end;
 
 procedure x3f_load_image_verbatim(I: Px3f_info; DE: Px3f_directory_entry);
@@ -1149,6 +1154,7 @@ procedure set_bit_state(var BS: bit_state; address: PByte);
 begin
   BS.next_address := address;
   BS.bit_offset := 8;
+  FillMemory(@BS.bits[0], 8, 0);
 end;
 
 function get_bit(var BS: bit_state): Byte;
@@ -1170,7 +1176,8 @@ begin
     BS.bit_offset := 0;
   end;
 
-  Result := BS.bits[BS.bit_offset + 1];
+  Result := BS.bits[BS.bit_offset];
+  Inc(BS.bit_offset);
 end;
 
 //* Decode use the TRUE algorithm */
@@ -2415,6 +2422,45 @@ begin
   end
   else
     Result := X3F_INTERNAL_ERROR;
+end;
+
+function x3f_load_image_block(_x3f: Px3f; DE: Px3f_directory_entry): x3f_return;
+var
+  I: Px3f_info;
+begin
+  I := @(_x3f.info);
+
+  if DE <> nil then
+  begin
+//    x3f_printf(DEBUG, "Load image block\n");
+
+    case DE.header.identifier of
+    X3F_SECi:
+      begin
+        read_data_set_offset(I, DE, X3F_IMAGE_HEADER_SIZE);
+        x3f_load_image_verbatim(I, DE);
+        Result := X3F_OK;
+      end
+    else
+//      x3f_printf(ERR, "Unknown image directory entry type\n");
+      Result := X3F_INTERNAL_ERROR;
+    end;
+  end
+  else
+    Result := X3F_ARGUMENT_ERROR;
+end;
+
+function x3f_err(err: x3f_return): String;
+begin
+  case err of
+  X3F_OK: Result := 'ok';
+  X3F_ARGUMENT_ERROR: Result := 'argument error';
+  X3F_INFILE_ERROR: Result := 'infile error';
+  X3F_OUTFILE_ERROR: Result := 'outfile error';
+  X3F_INTERNAL_ERROR: Result := 'internal error';
+  else
+    Result := 'undefined error';
+  end;
 end;
 
 end.
